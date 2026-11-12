@@ -1,0 +1,26 @@
+[package]
+name = "snugly"
+description = "Deterministic 2D atlas packing of rectangles and irregular shapes: MaxRects and skyline rectangle packing, outline-based shape packing with hole filling, padding, 90° rotations."
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.85"
+readme = "README.md"
+keywords = ["packing", "atlas", "texture", "uv", "maxrects"]
+categories = ["graphics", "game-development", "algorithms"]
+
+[features]
+default = ["parallel"]
+# Run independent packers and positions on rayon's thread pool. Output is identical without it.
+parallel = ["dep:rayon"]
+# Serialize / Deserialize for PackOptions, HoleFill and Placement.
+serde = ["dep:serde"]
+
+[dependencies]
+glam.workspace = true
+serde = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
