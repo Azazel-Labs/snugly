@@ -55,7 +55,7 @@ the atlas as ASCII.
 | `parallel` | on | Runs the packers, rule variants and position searches on rayon's pool. Turn it off (`default-features = false`) for WASM, single-threaded hosts or to avoid rayon: same output, slower on multi-core machines |
 | `serde` | off | `Serialize` / `Deserialize` for `PackOptions`, `HoleFill` and `Placement` |
 
-Minimum supported Rust version: **1.99** (edition 2024).
+Minimum supported Rust version: **1.88** (edition 2024).
 
 ## Options (`PackOptions`)
 
