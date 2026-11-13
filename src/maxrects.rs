@@ -1,4 +1,4 @@
-//! MaxRects rectangle packing (Jylänki, "A Thousand Ways to Pack the Bin", 2010): the free
+//! `MaxRects` rectangle packing (Jylänki, "A Thousand Ways to Pack the Bin", 2010): the free
 //! space is kept as the list of maximal empty rectangles, each rectangle goes where a scoring
 //! rule likes it best, and the free list is split and pruned after each placement.
 //!
@@ -15,11 +15,8 @@ struct R {
 }
 
 impl R {
-    fn contains(&self, o: &R) -> bool {
-        o.x >= self.x
-            && o.y >= self.y
-            && o.x + o.w <= self.x + self.w
-            && o.y + o.h <= self.y + self.h
+    fn contains(&self, o: &Self) -> bool {
+        o.x >= self.x && o.y >= self.y && o.x + o.w <= self.x + self.w && o.y + o.h <= self.y + self.h
     }
 }
 
@@ -65,7 +62,7 @@ pub(crate) const ORDERS: [Order; 5] = [
 fn order(sizes: &[(u32, u32)], o: Order) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..sizes.len()).collect();
     let key = |i: usize| -> (u64, u64) {
-        let (w, h) = (sizes[i].0 as u64, sizes[i].1 as u64);
+        let (w, h) = (u64::from(sizes[i].0), u64::from(sizes[i].1));
         match o {
             Order::Area => (w * h, w.max(h)),
             Order::Perimeter => (w + h, w * h),
@@ -92,8 +89,8 @@ struct Bin {
 }
 
 impl Bin {
-    fn new(width: u32, height: u32) -> Bin {
-        Bin {
+    fn new(width: u32, height: u32) -> Self {
+        Self {
             width,
             height,
             free: vec![R {
@@ -109,30 +106,33 @@ impl Bin {
     fn contact(&self, x: u32, y: u32, w: u32, h: u32) -> u64 {
         let mut s = 0u64;
         if x == 0 || x + w == self.width {
-            s += h as u64;
+            s += u64::from(h);
         }
         if y == 0 || y + h == self.height {
-            s += w as u64;
+            s += u64::from(w);
         }
         for u in &self.used {
             if u.x == x + w || u.x + u.w == x {
-                s += overlap(u.y, u.y + u.h, y, y + h) as u64;
+                s += u64::from(overlap(u.y, u.y + u.h, y, y + h));
             }
             if u.y == y + h || u.y + u.h == y {
-                s += overlap(u.x, u.x + u.w, x, x + w) as u64;
+                s += u64::from(overlap(u.x, u.x + u.w, x, x + w));
             }
         }
         s
     }
 
     fn score(&self, f: &R, w: u32, h: u32, rule: Rule) -> (u64, u64) {
-        let (dw, dh) = ((f.w - w) as u64, (f.h - h) as u64);
+        let (dw, dh) = (u64::from(f.w - w), u64::from(f.h - h));
         match rule {
             Rule::ShortSide => (dw.min(dh), dw.max(dh)),
             Rule::LongSide => (dw.max(dh), dw.min(dh)),
-            Rule::Area => (f.w as u64 * f.h as u64 - w as u64 * h as u64, dw.min(dh)),
-            Rule::BottomLeft => ((f.y + h) as u64, f.x as u64),
-            Rule::Contact => (u64::MAX - self.contact(f.x, f.y, w, h), (f.y + h) as u64),
+            Rule::Area => (
+                u64::from(f.w) * u64::from(f.h) - u64::from(w) * u64::from(h),
+                dw.min(dh),
+            ),
+            Rule::BottomLeft => (u64::from(f.y + h), u64::from(f.x)),
+            Rule::Contact => (u64::MAX - self.contact(f.x, f.y, w, h), u64::from(f.y + h)),
         }
     }
 

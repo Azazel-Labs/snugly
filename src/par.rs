@@ -23,17 +23,9 @@ where
 
 /// `items.map(f)` in input order, in parallel batches of at least `min_len`.
 #[cfg(feature = "parallel")]
-pub(crate) fn map<T: Sync, R: Send>(
-    items: &[T],
-    min_len: usize,
-    f: impl Fn(&T) -> R + Sync + Send,
-) -> Vec<R> {
+pub(crate) fn map<T: Sync, R: Send>(items: &[T], min_len: usize, f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
     use rayon::prelude::*;
-    items
-        .par_iter()
-        .with_min_len(min_len.max(1))
-        .map(f)
-        .collect()
+    items.par_iter().with_min_len(min_len.max(1)).map(f).collect()
 }
 
 #[cfg(not(feature = "parallel"))]

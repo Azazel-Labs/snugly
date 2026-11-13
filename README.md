@@ -53,7 +53,7 @@ the atlas as ASCII.
 | `parallel` | on | Runs the packers, rule variants and position searches on rayon's pool. Turn it off (`default-features = false`) for WASM, single-threaded hosts or to avoid rayon: same output, slower on multi-core machines |
 | `serde` | off | `Serialize` / `Deserialize` for `PackOptions`, `HoleFill` and `Placement` |
 
-Minimum supported Rust version: **1.85** (set by `glam` 0.34).
+Minimum supported Rust version: **1.99** (edition 2024).
 
 ## Options (`PackOptions`)
 
@@ -99,12 +99,12 @@ FFT or cross-correlation placement (US 12,112,510 B2).
 
 ## Benchmarks
 
-`bench-compare pack` (in the lodforge repo) gives every packer the same rectangles, sorted
+`bench-compare pack` (in the farthing repo, where snugly started) gives every packer the same rectangles, sorted
 longest side first, and a fixed atlas width. It reports the lowest height each packer fits
 (fixed-size packers by binary search on the height); utilization = rectangle area ÷ atlas area.
-Measured with 4 rayon threads (lodforge only; the others are single-threaded).
+Measured with 4 rayon threads (snugly only; the others are single-threaded).
 
-| dataset | lodforge | crunch 0.5 | rectangle-pack 0.4 | guillotiere 0.7 | etagere 0.3 |
+| dataset | snugly | crunch 0.5 | rectangle-pack 0.4 | guillotiere 0.7 | etagere 0.3 |
 |---|---|---|---|---|---|
 | 500 uniform 8–64 px, 1024 wide | **0.981** | 0.962 | 0.928 | 0.943 | 0.764 |
 | 300 sprites 16–256 px, 2048 wide | **0.980** | 0.966 | 0.872 | 0.929 | 0.778 |
@@ -112,13 +112,13 @@ Measured with 4 rayon threads (lodforge only; the others are single-threaded).
 | 24 large 48–512 px, 1024 wide | **0.921** | 0.873 | 0.784 | 0.678 | 0.567 |
 | 24 frames 256² + 40 props, 2048 wide | **0.978** | 0.974 | 0.954 | 0.954 | 0.775 |
 
-Rotations are on for lodforge and crunch (crunch's better of with and without);
+Rotations are on for snugly and crunch (crunch's better of with and without);
 rectangle-pack, guillotiere and etagere don't rotate. etagere and guillotiere are dynamic
-allocators built for speed and deallocation (under 3 ms here), not for density. lodforge's
+allocators built for speed and deallocation (under 3 ms here), not for density. snugly's
 strip search takes 3–190 ms on these sets, comparable to crunch's single-threaded 0.5–170 ms.
-The full table, with timings, is in the repo's `docs/BENCHMARKS.md`.
+The full table, with timings, is in the farthing repo's `docs/BENCHMARKS.md`.
 
-For UV charts, lodforge-uv with this packer reaches higher utilization than xatlas on all 8
+For UV charts, farthing-uv with this packer reaches higher utilization than xatlas on all 8
 glTF sample assets at 1024², 2 px padding: Fox 0.634 vs 0.547, water bottle 0.659 vs 0.640,
 DamagedHelmet 0.610 vs 0.470.
 

@@ -2,9 +2,11 @@
 name = "snugly"
 description = "Deterministic 2D atlas packing of rectangles and irregular shapes: MaxRects and skyline rectangle packing, outline-based shape packing with hole filling, padding, 90° rotations."
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-rust-version = "1.85"
+edition = "2024"
+license = "MIT-0"
+repository = "https://github.com/Azazel-Labs/snugly"
+documentation = "https://docs.rs/snugly"
+rust-version = "1.99"
 readme = "README.md"
 keywords = ["packing", "atlas", "texture", "uv", "maxrects"]
 categories = ["graphics", "game-development", "algorithms"]
@@ -17,10 +19,31 @@ parallel = ["dep:rayon"]
 serde = ["dep:serde"]
 
 [dependencies]
-glam.workspace = true
-serde = { workspace = true, optional = true }
-rayon = { workspace = true, optional = true }
+glam = "0.34"
+serde = { version = "1", features = ["derive"], optional = true }
+rayon = { version = "1.10", optional = true }
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+use_self = "warn"
+# Atlas coordinates and sizes are small and bounded: the u32 / i32 / f32 conversions in the
+# packers can't truncate or lose meaningful precision.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+# Geometry code: x, y, w, h and friends read better than long names.
+many_single_char_names = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+# Index loops over parallel outline arrays read clearer than zipped iterators.
+needless_range_loop = "allow"
+type_complexity = "allow"

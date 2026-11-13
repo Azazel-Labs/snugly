@@ -1,5 +1,7 @@
-# CI for snugly as a standalone repository (scripts/export-snugly.sh in the lodforge repo
-# writes this crate out with its own Cargo.toml).
+# CI for snugly. On a push to main, once every check passes, the release job publishes the
+# version in Cargo.toml to crates.io and labels it with a `vX.Y.Z` tag and GitHub release, if
+# that tag doesn't exist yet. To release: bump `version` in Cargo.toml and merge to main.
+# Release notes are generated from the commits and PRs since the previous tag.
 name: CI
 
 on:
@@ -30,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: dtolnay/rust-toolchain@1.99
       - run: cargo test --all-features
 
   wasm:
@@ -55,9 +57,72 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # docs.rs builds with nightly and `--cfg docsrs` (see package.metadata.docs.rs).
+  docsrs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo package
+
+  release:
+    needs: [test, msrv, wasm, lint, docsrs, package]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Read version
+        id: version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "snugly") | .version')"
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Skipped when this version is already on crates.io, so a rerun after a failed
+      # GitHub release step doesn't fail on a duplicate publish.
+      - name: Publish to crates.io
+        if: steps.version.outputs.release == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ua='snugly-release (https://github.com/Azazel-Labs/snugly)'
+          url="https://crates.io/api/v1/crates/snugly/$VERSION"
+          status="$(curl -s -o /dev/null -w '%{http_code}' -A "$ua" "$url")"
+          if [ "$status" = "200" ]; then
+            echo "snugly $VERSION is already on crates.io; skipping publish."
+          else
+            cargo publish
+          fi
+
+      - name: Tag and create GitHub release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes

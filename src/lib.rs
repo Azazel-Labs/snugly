@@ -10,13 +10,9 @@
 //!   that nests shapes under each other's overhangs; the lower atlas wins.
 //!
 //! Output depends only on the input, never on thread count. Placement is bottom-left search
-//! over outlines and free intervals: no FFT or correlation placement (see the patent list in
-//! lodforge's README).
+//! over outlines and free intervals: no FFT or cross-correlation placement.
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
-#![allow(clippy::needless_range_loop, clippy::type_complexity)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod maxrects;
 mod par;
@@ -63,9 +59,10 @@ struct Seg {
 /// assert!(snugly::pack_rects(&[(200, 10)], 128, 128, 0, false).is_none());
 /// ```
 ///
-/// Tries a skyline packer and a set of MaxRects variants (in parallel) and keeps the packing
+/// Tries a skyline packer and a set of `MaxRects` variants (in parallel) and keeps the packing
 /// that uses the least height; ties go to the earliest in a fixed order, so the result only
 /// depends on the input.
+#[must_use]
 pub fn pack_rects(
     sizes: &[(u32, u32)],
     width: u32,
@@ -80,11 +77,7 @@ pub fn pack_rects(
     );
     let mr = mr.map(|(p, top)| (unpad(&p, sizes, padding), top));
     match (sky, mr) {
-        (Some(a), Some(b)) => Some(if b.1 < used_height(&a, padding) {
-            b.0
-        } else {
-            a
-        }),
+        (Some(a), Some(b)) => Some(if b.1 < used_height(&a, padding) { b.0 } else { a }),
         (a, b) => a.or(b.map(|b| b.0)),
     }
 }
@@ -112,17 +105,14 @@ pub enum PackError {
 impl std::fmt::Display for PackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PackError::TooWide { index, width } => {
+            Self::TooWide { index, width } => {
                 write!(
                     f,
                     "item {index} is wider than the {width}px atlas in every allowed orientation"
                 )
             }
-            PackError::TooTall { height, max_height } => {
-                write!(
-                    f,
-                    "the packing needs {height}px, more than the {max_height}px limit"
-                )
+            Self::TooTall { height, max_height } => {
+                write!(f, "the packing needs {height}px, more than the {max_height}px limit")
             }
         }
     }
@@ -140,6 +130,15 @@ impl std::error::Error for PackError {}
 /// assert_eq!(placements.len(), 3);
 /// assert!(height >= 64);
 /// ```
+///
+/// # Errors
+///
+/// [`PackError::TooWide`] if a rectangle (padding included) is wider than `width` in every
+/// allowed orientation.
+#[expect(
+    clippy::missing_panics_doc,
+    reason = "widths are checked above, so the skyline always fits"
+)]
 pub fn pack_rects_strip(
     sizes: &[(u32, u32)],
     width: u32,
@@ -157,25 +156,20 @@ pub fn pack_rects_strip(
             (false, false) => return Err(PackError::TooWide { index, width }),
         };
         lo = lo.max(need);
-        area += w as u64 * h as u64;
+        area += u64::from(w) * u64::from(h);
     }
-    lo = lo.max(area.div_ceil(width.max(1) as u64) as u32);
+    lo = lo.max(area.div_ceil(u64::from(width.max(1))) as u32);
     let sky = skyline_rects(sizes, width, u32::MAX / 2, padding, allow_rotate)
         .expect("every rectangle fits the strip's width");
     let hi = used_height(&sky, padding);
-    Ok(
-        match maxrects::best_strip(&padded, width, lo, hi, allow_rotate) {
-            Some((p, top)) if top < hi => (unpad(&p, sizes, padding), top),
-            _ => (sky, hi),
-        },
-    )
+    Ok(match maxrects::best_strip(&padded, width, lo, hi, allow_rotate) {
+        Some((p, top)) if top < hi => (unpad(&p, sizes, padding), top),
+        _ => (sky, hi),
+    })
 }
 
 fn padded(sizes: &[(u32, u32)], padding: u32) -> Vec<(u32, u32)> {
-    sizes
-        .iter()
-        .map(|&(w, h)| (w + 2 * padding, h + 2 * padding))
-        .collect()
+    sizes.iter().map(|&(w, h)| (w + 2 * padding, h + 2 * padding)).collect()
 }
 
 fn unpad(p: &[(u32, u32, bool)], sizes: &[(u32, u32)], padding: u32) -> Vec<Placement> {
@@ -203,13 +197,8 @@ fn skyline_rects(
     allow_rotate: bool,
 ) -> Option<Vec<Placement>> {
     let mut order: Vec<usize> = (0..sizes.len()).collect();
-    order
-        .sort_by_key(|&i| std::cmp::Reverse((sizes[i].0.max(sizes[i].1), sizes[i].0 * sizes[i].1)));
-    let mut sky = vec![Seg {
-        x: 0,
-        w: width,
-        y: 0,
-    }];
+    order.sort_by_key(|&i| std::cmp::Reverse((sizes[i].0.max(sizes[i].1), sizes[i].0 * sizes[i].1)));
+    let mut sky = vec![Seg { x: 0, w: width, y: 0 }];
     let mut out = vec![
         Placement {
             x: 0,
@@ -355,11 +344,8 @@ mod tests {
         for rot in [false, true] {
             let sz = sizes(300, 0x1234_5679);
             let (p, h) = pack_rects_strip(&sz, 512, 1, rot).unwrap();
-            let area: u64 = sz
-                .iter()
-                .map(|&(w, h)| (w + 2) as u64 * (h + 2) as u64)
-                .sum();
-            let util = area as f64 / (512.0 * h as f64);
+            let area: u64 = sz.iter().map(|&(w, h)| u64::from(w + 2) * u64::from(h + 2)).sum();
+            let util = area as f64 / (512.0 * f64::from(h));
             assert!(util > 0.9, "utilization {util}");
             for i in 0..p.len() {
                 assert!(rot || !p[i].rotated);
@@ -379,27 +365,25 @@ mod tests {
         let mut h = 0xcbf2_9ce4_8422_2325u64;
         let mut eat = |x: u32| {
             for b in x.to_le_bytes() {
-                h ^= b as u64;
+                h ^= u64::from(b);
                 h = h.wrapping_mul(0x100_0000_01b3);
             }
         };
         let sz = sizes(160, 0x5eed_1234);
         for p in pack_rects(&sz, 700, 700, 1, true).unwrap() {
-            [p.x, p.y, p.w, p.h, p.rotated as u32]
+            [p.x, p.y, p.w, p.h, u32::from(p.rotated)]
                 .into_iter()
                 .for_each(&mut eat);
         }
         let (ps, top) = pack_rects_strip(&sz, 512, 1, true).unwrap();
         eat(top);
         for p in ps {
-            [p.x, p.y, p.rotated as u32].into_iter().for_each(&mut eat);
+            [p.x, p.y, u32::from(p.rotated)].into_iter().for_each(&mut eat);
         }
         let shapes: Vec<ChartMask> = (0..40u32)
             .map(|i| {
                 let (w, h) = (6 + i * 7 % 23, 5 + i * 11 % 19);
-                let bits: Vec<bool> = (0..w * h)
-                    .map(|k| (k % w) * 3 < w * 2 || (k / w) * 2 < h)
-                    .collect();
+                let bits: Vec<bool> = (0..w * h).map(|k| (k % w) * 3 < w * 2 || (k / w) * 2 < h).collect();
                 ChartMask::from_bits(w, h, &bits)
             })
             .collect();
@@ -479,6 +463,7 @@ fn slab_extent(t: &[glam::Vec2; 3], x: f32) -> Option<(f32, f32)> {
         if a.x >= x0 && a.x <= x1 {
             add(a.y);
         }
+        #[expect(clippy::float_cmp, reason = "only exactly vertical edges would divide by zero")]
         if a.x != b.x {
             for xs in [x0, x1] {
                 if (a.x - xs) * (b.x - xs) <= 0.0 {
@@ -497,21 +482,11 @@ fn slab_extent(t: &[glam::Vec2; 3], x: f32) -> Option<(f32, f32)> {
 fn outlines(tris: &[[glam::Vec2; 3]], w: u32, h: u32, swap: bool) -> Vec<Option<(u32, u32)>> {
     let mut out: Vec<Option<(u32, u32)>> = vec![None; w as usize];
     for t in tris {
-        let t = if swap {
-            t.map(|p| glam::Vec2::new(p.y, p.x))
-        } else {
-            *t
-        };
+        let t = if swap { t.map(|p| glam::Vec2::new(p.y, p.x)) } else { *t };
         let mn = t[0].min(t[1]).min(t[2]);
         let mx = t[0].max(t[1]).max(t[2]);
-        let (bx0, bx1) = (
-            mn.x.floor().max(0.0) as u32,
-            (mx.x.ceil().min(w as f32)) as u32,
-        );
-        let (by0, by1) = (
-            mn.y.floor().max(0.0) as i64,
-            (mx.y.ceil().min(h as f32)) as i64,
-        );
+        let (bx0, bx1) = (mn.x.floor().max(0.0) as u32, (mx.x.ceil().min(w as f32)) as u32);
+        let (by0, by1) = (mn.y.floor().max(0.0) as i64, (mx.y.ceil().min(h as f32)) as i64);
         if by1 <= by0 {
             continue;
         }
@@ -524,10 +499,7 @@ fn outlines(tris: &[[glam::Vec2; 3]], w: u32, h: u32, swap: bool) -> Vec<Option<
                     continue;
                 };
                 // Row y touches [lo, hi] when y <= hi and y + 1 >= lo.
-                (
-                    (lo.ceil() as i64 - 1).max(by0),
-                    (hi.floor() as i64 + 1).min(by1),
-                )
+                ((lo.ceil() as i64 - 1).max(by0), (hi.floor() as i64 + 1).min(by1))
             };
             if y1 <= y0 {
                 continue;
@@ -564,21 +536,11 @@ fn dilate_outline(o: &[Option<(u32, u32)>], r: u32, extent: u32) -> Vec<Option<(
 fn spans(tris: &[[glam::Vec2; 3]], w: u32, h: u32, swap: bool) -> Vec<Vec<(u32, u32)>> {
     let mut out: Vec<Vec<(u32, u32)>> = vec![Vec::new(); w as usize];
     for t in tris {
-        let t = if swap {
-            t.map(|p| glam::Vec2::new(p.y, p.x))
-        } else {
-            *t
-        };
+        let t = if swap { t.map(|p| glam::Vec2::new(p.y, p.x)) } else { *t };
         let mn = t[0].min(t[1]).min(t[2]);
         let mx = t[0].max(t[1]).max(t[2]);
-        let (bx0, bx1) = (
-            mn.x.floor().max(0.0) as u32,
-            (mx.x.ceil().min(w as f32)) as u32,
-        );
-        let (by0, by1) = (
-            mn.y.floor().max(0.0) as i64,
-            (mx.y.ceil().min(h as f32)) as i64,
-        );
+        let (bx0, bx1) = (mn.x.floor().max(0.0) as u32, (mx.x.ceil().min(w as f32)) as u32);
+        let (by0, by1) = (mn.y.floor().max(0.0) as i64, (mx.y.ceil().min(h as f32)) as i64);
         if by1 <= by0 {
             continue;
         }
@@ -590,10 +552,7 @@ fn spans(tris: &[[glam::Vec2; 3]], w: u32, h: u32, swap: bool) -> Vec<Vec<(u32, 
                 let Some((lo, hi)) = slab_extent(&t, x as f32) else {
                     continue;
                 };
-                (
-                    (lo.ceil() as i64 - 1).max(by0),
-                    (hi.floor() as i64 + 1).min(by1),
-                )
+                ((lo.ceil() as i64 - 1).max(by0), (hi.floor() as i64 + 1).min(by1))
             };
             if y1 > y0 {
                 out[x as usize].push((y0 as u32, y1 as u32));
@@ -649,13 +608,14 @@ fn gaps(cols: &[Vec<(u32, u32)>]) -> Vec<Vec<(u32, u32)>> {
 impl ChartMask {
     /// Conservatively rasterizes 2D triangles (already in pixel units, frame origin at 0,0)
     /// and dilates the result by `padding` pixels, as outlines.
-    pub fn from_triangles(tris: &[[glam::Vec2; 3]], w: u32, h: u32, padding: u32) -> ChartMask {
+    #[must_use]
+    pub fn from_triangles(tris: &[[glam::Vec2; 3]], w: u32, h: u32, padding: u32) -> Self {
         let col = dilate_outline(&outlines(tris, w, h, false), padding, h);
         let row = dilate_outline(&outlines(tris, h, w, true), padding, w);
         let area = col.iter().flatten().map(|(a, b)| (b - a) as usize).sum();
         let col_gaps = gaps(&dilate_spans(&spans(tris, w, h, false), padding, h));
         let row_gaps = gaps(&dilate_spans(&spans(tris, h, w, true), padding, w));
-        ChartMask {
+        Self {
             w,
             h,
             col,
@@ -668,7 +628,8 @@ impl ChartMask {
 
     /// From an explicit pixel mask (tests).
     /// From a row-major raster mask (`w × h`, true = covered). Padding is not added.
-    pub fn from_bits(w: u32, h: u32, bits: &[bool]) -> ChartMask {
+    #[must_use]
+    pub fn from_bits(w: u32, h: u32, bits: &[bool]) -> Self {
         let mut col: Vec<Option<(u32, u32)>> = vec![None; w as usize];
         let mut row: Vec<Option<(u32, u32)>> = vec![None; h as usize];
         for y in 0..h {
@@ -698,13 +659,9 @@ impl ChartMask {
             }
             out
         };
-        let col_spans: Vec<Vec<(u32, u32)>> = (0..w)
-            .map(|x| run(h, &|y| bits[(y * w + x) as usize]))
-            .collect();
-        let row_spans: Vec<Vec<(u32, u32)>> = (0..h)
-            .map(|y| run(w, &|x| bits[(y * w + x) as usize]))
-            .collect();
-        ChartMask {
+        let col_spans: Vec<Vec<(u32, u32)>> = (0..w).map(|x| run(h, &|y| bits[(y * w + x) as usize])).collect();
+        let row_spans: Vec<Vec<(u32, u32)>> = (0..h).map(|y| run(w, &|x| bits[(y * w + x) as usize])).collect();
+        Self {
             w,
             h,
             col,
@@ -716,8 +673,9 @@ impl ChartMask {
     }
 
     /// A solid `w × h` rectangle.
-    pub fn rect(w: u32, h: u32) -> ChartMask {
-        ChartMask {
+    #[must_use]
+    pub fn rect(w: u32, h: u32) -> Self {
+        Self {
             w,
             h,
             col: vec![Some((0, h)); w as usize],
@@ -732,20 +690,15 @@ impl ChartMask {
     /// [`rotated_profiles`](Self::rotated_profiles)).
     fn rotated_gaps(&self, k: u32) -> Vec<Vec<(u32, u32)>> {
         let (w, h) = (self.w, self.h);
-        let flip = |v: &Vec<(u32, u32)>, n: u32| -> Vec<(u32, u32)> {
-            v.iter().rev().map(|&(a, b)| (n - b, n - a)).collect()
-        };
+        let flip =
+            |v: &Vec<(u32, u32)>, n: u32| -> Vec<(u32, u32)> { v.iter().rev().map(|&(a, b)| (n - b, n - a)).collect() };
         match k % 4 {
             0 => self.col_gaps.clone(),
-            1 => (0..h)
-                .map(|nc| self.row_gaps[(h - 1 - nc) as usize].clone())
-                .collect(),
+            1 => (0..h).map(|nc| self.row_gaps[(h - 1 - nc) as usize].clone()).collect(),
             2 => (0..w)
                 .map(|nc| flip(&self.col_gaps[(w - 1 - nc) as usize], h))
                 .collect(),
-            _ => (0..h)
-                .map(|nc| flip(&self.row_gaps[nc as usize], w))
-                .collect(),
+            _ => (0..h).map(|nc| flip(&self.row_gaps[nc as usize], w)).collect(),
         }
     }
 
@@ -755,6 +708,7 @@ impl ChartMask {
     }
 
     /// Frame width and height.
+    #[must_use]
     pub fn size(&self) -> (u32, u32) {
         (self.w, self.h)
     }
@@ -793,6 +747,7 @@ impl ChartMask {
 }
 
 /// Maps a point in a chart's pixel frame (w × h) to its frame after k × 90° CCW rotation.
+#[must_use]
 pub fn rotate_point(p: glam::Vec2, w: u32, h: u32, k: u32) -> glam::Vec2 {
     let (w, h) = (w as f32, h as f32);
     match k % 4 {
@@ -806,12 +761,7 @@ pub fn rotate_point(p: glam::Vec2, w: u32, h: u32, k: u32) -> glam::Vec2 {
 #[cfg(test)]
 fn tri_box_overlap(t: &[glam::Vec2; 3], lo: glam::Vec2, hi: glam::Vec2) -> bool {
     // Separating axes: box axes (handled by the caller's bounding box) and the triangle edges.
-    let corners = [
-        lo,
-        glam::Vec2::new(hi.x, lo.y),
-        hi,
-        glam::Vec2::new(lo.x, hi.y),
-    ];
+    let corners = [lo, glam::Vec2::new(hi.x, lo.y), hi, glam::Vec2::new(lo.x, hi.y)];
     let area = (t[1] - t[0]).perp_dot(t[2] - t[0]);
     if area.abs() < 1e-12 {
         // Degenerate: test the segment bounding box only.
@@ -820,7 +770,7 @@ fn tri_box_overlap(t: &[glam::Vec2; 3], lo: glam::Vec2, hi: glam::Vec2) -> bool 
     for e in 0..3 {
         let (a, b) = (t[e], t[(e + 1) % 3]);
         let n = (b - a).perp() * area.signum(); // inward normal
-                                                // If all corners are strictly outside this edge, separated.
+        // If all corners are strictly outside this edge, separated.
         if corners.iter().all(|&c| n.dot(c - a) < 0.0) {
             return false;
         }
@@ -828,7 +778,7 @@ fn tri_box_overlap(t: &[glam::Vec2; 3], lo: glam::Vec2, hi: glam::Vec2) -> bool 
     true
 }
 
-/// max(0, max_c(window[c] − lo[c])): where a chart's lower outline comes to rest on the skyline.
+/// max(0, `max_c(window`[c] − lo[c])): where a chart's lower outline comes to rest on the skyline.
 /// A dense, branch-free max that the compiler vectorizes.
 #[inline]
 fn resting_height(window: &[i32], lo: &[i32]) -> i32 {
@@ -856,20 +806,12 @@ pub struct MaskPlacement {
 /// rotations) drops onto a per-column skyline where its lower outline fits with the least wasted
 /// area, so irregular charts interlock instead of being packed as bounding boxes.
 #[deprecated(since = "0.1.0", note = "use `pack` with `HoleFill::Never`")]
-pub fn pack_charts(
-    masks: &[ChartMask],
-    width: u32,
-    height: u32,
-) -> Option<(Vec<MaskPlacement>, u32)> {
+#[must_use]
+pub fn pack_charts(masks: &[ChartMask], width: u32, height: u32) -> Option<(Vec<MaskPlacement>, u32)> {
     skyline(masks, width, height, true)
 }
 
-fn skyline(
-    masks: &[ChartMask],
-    width: u32,
-    height: u32,
-    rotations: bool,
-) -> Option<(Vec<MaskPlacement>, u32)> {
+fn skyline(masks: &[ChartMask], width: u32, height: u32, rotations: bool) -> Option<(Vec<MaskPlacement>, u32)> {
     let covered: Vec<usize> = masks.iter().map(|m| m.area).collect();
     let mut order: Vec<usize> = (0..masks.len()).collect();
     order.sort_by_key(|&i| std::cmp::Reverse((masks[i].w.max(masks[i].h), covered[i])));
@@ -913,10 +855,9 @@ fn skyline(
                 best: Some((score, x0, y0)),
                 ..
             }) = f
+                && best.is_none_or(|bb| *score < bb.0)
             {
-                if best.is_none_or(|bb| *score < bb.0) {
-                    best = Some((*score, *x0, *y0, k as u32));
-                }
+                best = Some((*score, *x0, *y0, k as u32));
             }
         }
         let (_, x0, y0, k) = best?;
@@ -925,11 +866,11 @@ fn skyline(
             if lo[c] != EMPTY {
                 let s = &mut sky[x0 as usize + c];
                 *s = (*s).max(y0 as i32 + hi[c]);
-                top = top.max(y0 as i64 + hi[c] as i64);
+                top = top.max(i64::from(y0) + i64::from(hi[c]));
             }
         }
         for x in 0..width as usize {
-            prefix[x + 1] = prefix[x] + sky[x] as i64;
+            prefix[x + 1] = prefix[x] + i64::from(sky[x]);
         }
         out[i] = MaskPlacement {
             x: x0,
@@ -947,20 +888,12 @@ fn skyline(
 /// around the best few. Worth it when there are few, large, irregular charts, where the
 /// skyline's lost space under overhangs is a large share of the atlas.
 #[deprecated(since = "0.1.0", note = "use `pack` with `HoleFill::Always`")]
-pub fn pack_charts_holes(
-    masks: &[ChartMask],
-    width: u32,
-    height: u32,
-) -> Option<(Vec<MaskPlacement>, u32)> {
+#[must_use]
+pub fn pack_charts_holes(masks: &[ChartMask], width: u32, height: u32) -> Option<(Vec<MaskPlacement>, u32)> {
     holes(masks, width, height, true)
 }
 
-fn holes(
-    masks: &[ChartMask],
-    width: u32,
-    height: u32,
-    rotations: bool,
-) -> Option<(Vec<MaskPlacement>, u32)> {
+fn holes(masks: &[ChartMask], width: u32, height: u32, rotations: bool) -> Option<(Vec<MaskPlacement>, u32)> {
     holes_nest(masks, width, height, rotations, false)
 }
 
@@ -1001,14 +934,11 @@ fn holes_nest(
         let mut best: Option<(u32, u32, u32, u32)> = None;
         for (k, (mw, mh, prof)) in profs.iter().enumerate() {
             let (mw, mh) = (*mw, *mh);
-            if mw > width || mh > height || prof.iter().all(|p| p.is_none()) {
+            if mw > width || mh > height || prof.iter().all(std::option::Option::is_none) {
                 continue;
             }
             let hmax = prof.iter().flatten().map(|p| p.1).max().unwrap_or(0);
-            let lo: Vec<i32> = prof
-                .iter()
-                .map(|p| p.map_or(EMPTY, |(l, _)| l as i32))
-                .collect();
+            let lo: Vec<i32> = prof.iter().map(|p| p.map_or(EMPTY, |(l, _)| l as i32)).collect();
             let (free, tops, holed) = (&free, &tops, &holed);
             // Lowest y at which every column of the mask fits into a free interval. Without
             // holes in the window this is the skyline's resting height. With holes, columns
@@ -1024,10 +954,10 @@ fn holes_nest(
                 // Feasible y: [base, sky] intersected with each holed column's fitting ranges.
                 let mut base = 0u32;
                 for (c, span) in prof.iter().enumerate().step_by(step) {
-                    if let Some((l, _)) = *span {
-                        if free[x + c].len() == 1 {
-                            base = base.max((tops[x + c] - l as i32).max(0) as u32);
-                        }
+                    if let Some((l, _)) = *span
+                        && free[x + c].len() == 1
+                    {
+                        base = base.max((tops[x + c] - l as i32).max(0) as u32);
                     }
                 }
                 if base >= sky {
@@ -1083,10 +1013,7 @@ fn holes_nest(
             }
             let par = xs.len() * mw as usize >= 1 << 15;
             let mut coarse: Vec<(u32, u32, u32)> = if par {
-                par::map(&xs, 8, |&x| score(x, 4))
-                    .into_iter()
-                    .flatten()
-                    .collect()
+                par::map(&xs, 8, |&x| score(x, 4)).into_iter().flatten().collect()
             } else {
                 xs.iter().filter_map(|&x| score(x, 4)).collect()
             };
@@ -1102,10 +1029,7 @@ fn holes_nest(
             // that order until the bound exceeds the best exact score (over all rotations so
             // far). Same choice as checking every position exactly.
             let mut bounds: Vec<(u32, u32, u32)> = if refine.len() * mw as usize >= 1 << 15 {
-                par::map(&refine, 8, |&x| score(x, 4))
-                    .into_iter()
-                    .flatten()
-                    .collect()
+                par::map(&refine, 8, |&x| score(x, 4)).into_iter().flatten().collect()
             } else {
                 refine.iter().filter_map(|&x| score(x, 4)).collect()
             };
@@ -1114,10 +1038,10 @@ fn holes_nest(
                 if best.is_some_and(|b| lb > (b.0, b.1, b.2)) {
                     break;
                 }
-                if let Some((t, y, x)) = score(lb.2, 1) {
-                    if best.is_none_or(|b| (t, y, x) < (b.0, b.1, b.2)) {
-                        best = Some((t, y, x, k as u32));
-                    }
+                if let Some((t, y, x)) = score(lb.2, 1)
+                    && best.is_none_or(|b| (t, y, x) < (b.0, b.1, b.2))
+                {
+                    best = Some((t, y, x, k as u32));
                 }
             }
         }
@@ -1151,7 +1075,7 @@ fn holes_nest(
             top = top.max(y1);
         }
         for c in 0..w {
-            holed[c + 1] = holed[c] + (free[c].len() > 1) as u32;
+            holed[c + 1] = holed[c] + u32::from(free[c].len() > 1);
         }
         out[i] = MaskPlacement { x, y, rotation: k };
     }
@@ -1186,36 +1110,29 @@ impl Skyline<'_> {
         if mw > width || mh > height_u {
             return None;
         }
-        let lo: Vec<i32> = prof
-            .iter()
-            .map(|p| p.map_or(EMPTY, |(l, _)| l as i32))
-            .collect();
-        let hi: Vec<i32> = prof
-            .iter()
-            .map(|p| p.map_or(0, |(_, h)| h as i32))
-            .collect();
+        let lo: Vec<i32> = prof.iter().map(|p| p.map_or(EMPTY, |(l, _)| l as i32)).collect();
+        let hi: Vec<i32> = prof.iter().map(|p| p.map_or(0, |(_, h)| h as i32)).collect();
         let filled = prof.iter().filter(|p| p.is_some()).count() as i64;
         if filled == 0 {
             return None;
         }
         // Window sum over filled columns = full window sum − the (few) empty columns.
         let empties: Vec<usize> = (0..lo.len()).filter(|&c| lo[c] == EMPTY).collect();
-        let sum_lo: i64 = lo.iter().filter(|&&l| l != EMPTY).map(|&l| l as i64).sum();
-        let hmax = *hi.iter().max().unwrap() as i64;
-        let (w, height, width_u, top_now) = (mw as usize, height_u as i64, width as u64, self.top);
+        let sum_lo: i64 = lo.iter().filter(|&&l| l != EMPTY).map(|&l| i64::from(l)).sum();
+        let hmax = i64::from(*hi.iter().max().unwrap());
+        let (w, height, width_u, top_now) = (mw as usize, i64::from(height_u), u64::from(width), self.top);
         let (sky_ref, prefix_ref, lo_ref, empties_ref) = (self.sky, self.prefix, &lo, &empties);
         let eval = |x0: u32| -> Option<(u64, u32)> {
             let x = x0 as usize;
             let window = &sky_ref[x..x + w];
-            let y0 = resting_height(window, lo_ref) as i64;
+            let y0 = i64::from(resting_height(window, lo_ref));
             let peak = y0 + hmax;
             if peak > height {
                 return None;
             }
             // waste = Σ over filled columns of (y0 + lo − sky)
-            let sky_sum = prefix_ref[x + w]
-                - prefix_ref[x]
-                - empties_ref.iter().map(|&c| window[c] as i64).sum::<i64>();
+            let sky_sum =
+                prefix_ref[x + w] - prefix_ref[x] - empties_ref.iter().map(|&c| i64::from(window[c])).sum::<i64>();
             let waste = (filled * y0 + sum_lo - sky_sum) as u64;
             let raise = (peak - top_now).max(0) as u64;
             Some((waste + raise * width_u, y0 as u32))
@@ -1264,10 +1181,10 @@ impl Skyline<'_> {
         // First strictly better score in refinement order wins.
         let mut best: Option<(u64, u32, u32)> = None;
         for (&x0, s) in refine.iter().zip(scored) {
-            if let Some((score, y0)) = s {
-                if best.is_none_or(|bb| score < bb.0) {
-                    best = Some((score, x0, y0));
-                }
+            if let Some((score, y0)) = s
+                && best.is_none_or(|bb| score < bb.0)
+            {
+                best = Some((score, x0, y0));
             }
         }
         Some(Fit { lo, hi, best })
@@ -1317,8 +1234,9 @@ pub struct PackOptions {
 impl PackOptions {
     /// Defaults for an atlas `width` pixels wide: unbounded height, rotations on,
     /// [`HoleFill::Auto`], no nesting in holes.
-    pub fn width(width: u32) -> PackOptions {
-        PackOptions {
+    #[must_use]
+    pub fn width(width: u32) -> Self {
+        Self {
             width,
             max_height: None,
             rotations: true,
@@ -1328,24 +1246,28 @@ impl PackOptions {
     }
 
     /// Sets [`max_height`](Self::max_height).
+    #[must_use]
     pub fn with_max_height(mut self, max_height: u32) -> Self {
         self.max_height = Some(max_height);
         self
     }
 
     /// Sets [`rotations`](Self::rotations).
+    #[must_use]
     pub fn with_rotations(mut self, rotations: bool) -> Self {
         self.rotations = rotations;
         self
     }
 
     /// Sets [`fill_holes`](Self::fill_holes).
+    #[must_use]
     pub fn with_fill_holes(mut self, fill_holes: HoleFill) -> Self {
         self.fill_holes = fill_holes;
         self
     }
 
     /// Sets [`nest_in_holes`](Self::nest_in_holes).
+    #[must_use]
     pub fn with_nest_in_holes(mut self, nest: bool) -> Self {
         self.nest_in_holes = nest;
         self
@@ -1377,6 +1299,15 @@ pub struct Packing {
 /// let packing = pack(&shapes, &PackOptions::width(10)).unwrap();
 /// assert_eq!(packing.height, 10);
 /// ```
+///
+/// # Errors
+///
+/// [`PackError::TooWide`] if a shape is wider than `opts.width` in every allowed orientation,
+/// [`PackError::TooTall`] if the packing needs more than [`PackOptions::max_height`] rows.
+#[expect(
+    clippy::missing_panics_doc,
+    reason = "widths are checked above, so a packer always succeeds"
+)]
 pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> {
     for (index, s) in shapes.iter().enumerate() {
         if s.w > opts.width && !(opts.rotations && s.h <= opts.width) {
@@ -1396,7 +1327,7 @@ pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> 
                 .map(|q| MaskPlacement {
                     x: q.x,
                     y: q.y,
-                    rotation: if q.rotated { 1 } else { 0 },
+                    rotation: u32::from(q.rotated),
                 })
                 .collect(),
             height: h,
@@ -1412,15 +1343,7 @@ pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> 
             || skyline(shapes, opts.width, height, opts.rotations),
             || {
                 (run_holes || opts.nest_in_holes)
-                    .then(|| {
-                        holes_nest(
-                            shapes,
-                            opts.width,
-                            height,
-                            opts.rotations,
-                            opts.nest_in_holes,
-                        )
-                    })
+                    .then(|| holes_nest(shapes, opts.width, height, opts.rotations, opts.nest_in_holes))
                     .flatten()
             },
         );
@@ -1439,7 +1362,7 @@ pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> 
         // heights below the outline packers' result are searched, and not at all when the
         // rectangles' area alone rules that out.
         let sizes: Vec<(u32, u32)> = shapes.iter().map(|s| (s.w, s.h)).collect();
-        let area: u64 = sizes.iter().map(|&(w, h)| w as u64 * h as u64).sum();
+        let area: u64 = sizes.iter().map(|&(w, h)| u64::from(w) * u64::from(h)).sum();
         let lo = sizes
             .iter()
             .map(|&(w, h)| {
@@ -1451,23 +1374,20 @@ pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> 
             })
             .max()
             .unwrap_or(0)
-            .max(area.div_ceil(opts.width.max(1) as u64) as u32);
-        if lo < height {
-            if let Some((p, h)) =
-                maxrects::best_strip(&sizes, opts.width, lo, height - 1, opts.rotations)
-            {
-                if h < height {
-                    height = h;
-                    placements = p
-                        .iter()
-                        .map(|&(x, y, r)| MaskPlacement {
-                            x,
-                            y,
-                            rotation: if r { 1 } else { 0 },
-                        })
-                        .collect();
-                }
-            }
+            .max(area.div_ceil(u64::from(opts.width.max(1))) as u32);
+        if lo < height
+            && let Some((p, h)) = maxrects::best_strip(&sizes, opts.width, lo, height - 1, opts.rotations)
+            && h < height
+        {
+            height = h;
+            placements = p
+                .iter()
+                .map(|&(x, y, r)| MaskPlacement {
+                    x,
+                    y,
+                    rotation: u32::from(r),
+                })
+                .collect();
         }
         Packing { placements, height }
     };
@@ -1491,35 +1411,28 @@ mod mask_tests {
         let mut bits = vec![false; (w * h) as usize];
         for t in tris {
             let lo = t[0].min(t[1]).min(t[2]).floor().max(Vec2::ZERO);
-            let hi = t[0]
-                .max(t[1])
-                .max(t[2])
-                .ceil()
-                .min(Vec2::new(w as f32, h as f32));
+            let hi = t[0].max(t[1]).max(t[2]).ceil().min(Vec2::new(w as f32, h as f32));
             for y in lo.y as u32..hi.y as u32 {
                 for x in lo.x as u32..hi.x as u32 {
-                    let (a, b) = (
-                        Vec2::new(x as f32, y as f32),
-                        Vec2::new(x as f32 + 1.0, y as f32 + 1.0),
-                    );
+                    let (a, b) = (Vec2::new(x as f32, y as f32), Vec2::new(x as f32 + 1.0, y as f32 + 1.0));
                     if tri_box_overlap(t, a, b) {
                         bits[(y * w + x) as usize] = true;
                     }
                 }
             }
         }
-        let r = pad as i64;
-        (0..(w * h) as i64)
+        let r = i64::from(pad);
+        (0..i64::from(w * h))
             .map(|i| {
-                let (x, y) = (i % w as i64, i / w as i64);
+                let (x, y) = (i % i64::from(w), i / i64::from(w));
                 (-r..=r).any(|dy| {
                     (-r..=r).any(|dx| {
                         let (xx, yy) = (x + dx, y + dy);
                         xx >= 0
                             && yy >= 0
-                            && xx < w as i64
-                            && yy < h as i64
-                            && bits[(yy * w as i64 + xx) as usize]
+                            && xx < i64::from(w)
+                            && yy < i64::from(h)
+                            && bits[(yy * i64::from(w) + xx) as usize]
                     })
                 })
             })
@@ -1559,16 +1472,8 @@ mod mask_tests {
         let fast = ChartMask::from_bits(w, h, &bits).rotated_profiles();
         for k in 0..4u32 {
             let (rw, rh, rb) = rotate_bits(&bits, w, h, k);
-            assert_eq!(
-                (rw, rh),
-                (fast[k as usize].0, fast[k as usize].1),
-                "rotation {k} frame"
-            );
-            assert_eq!(
-                col_profiles(&rb, rw, rh),
-                fast[k as usize].2,
-                "rotation {k} profiles"
-            );
+            assert_eq!((rw, rh), (fast[k as usize].0, fast[k as usize].1), "rotation {k} frame");
+            assert_eq!(col_profiles(&rb, rw, rh), fast[k as usize].2, "rotation {k} profiles");
         }
     }
 
@@ -1718,10 +1623,7 @@ mod mask_tests {
             max_height: Some(40),
             ..PackOptions::width(64)
         };
-        assert!(matches!(
-            pack(&shapes, &capped),
-            Err(PackError::TooTall { .. })
-        ));
+        assert!(matches!(pack(&shapes, &capped), Err(PackError::TooTall { .. })));
     }
 
     #[test]
