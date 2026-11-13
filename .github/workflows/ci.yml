@@ -52,7 +52,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - run: cargo fmt --check
-      - run: cargo clippy --all-features --all-targets
+      - run: cargo clippy --workspace --all-features --all-targets
       - run: cargo doc --all-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings

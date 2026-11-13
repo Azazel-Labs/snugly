@@ -1,10 +1,5 @@
-//! Renders the README / social-preview hero: a few dozen irregular shapes (blobs, stars, rings
-//! with shapes nested inside, rectangle unions) packed by [`snugly::pack`], drawn as SVG.
-//!
-//! `cargo run --release --example hero -- 1280 640 > hero.svg`
-//!
-//! The arguments are the image size in pixels. `assets/render-hero.sh` turns the SVG into the
-//! PNGs the README and GitHub use.
+//! The README / social-preview hero: a few dozen irregular shapes (blobs, stars, rings with
+//! shapes nested inside, rectangle unions) packed by [`snugly::pack`], drawn as SVG.
 
 use snugly::glam::Vec2;
 use snugly::{ChartMask, HoleFill, PackOptions, pack, rotate_point};
@@ -233,12 +228,9 @@ fn recolor(pieces: &mut [Piece], places: &[snugly::MaskPlacement], rng: &mut Rng
     }
 }
 
-fn main() {
-    let args: Vec<u32> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
-    let (w, h) = (
-        *args.first().unwrap_or(&1280) as f32,
-        *args.get(1).unwrap_or(&640) as f32,
-    );
+/// The hero as an SVG document, `w × h` pixels.
+pub fn svg(w: u32, h: u32) -> String {
+    let (w, h) = (w as f32, h as f32);
 
     // Layout: wordmark on the left, the atlas panel on the right.
     let margin = (h * 0.09).round();
@@ -343,5 +335,5 @@ fn main() {
         bar_r = big * 0.035,
         accent = PALETTE[0],
     );
-    print!("{s}");
+    s
 }
