@@ -1,5 +1,7 @@
 # snugly
 
+![snugly: irregular shapes packed into an atlas by snugly](https://raw.githubusercontent.com/Azazel-Labs/snugly/main/assets/hero.png)
+
 *Fits your shapes together, snugly.*
 
 Deterministic 2D atlas packing for rectangles and irregular shapes, in pure safe Rust

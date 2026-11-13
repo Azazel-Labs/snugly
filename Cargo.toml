@@ -1,13 +1,14 @@
 [package]
 name = "snugly"
 description = "Deterministic 2D atlas packing of rectangles and irregular shapes: MaxRects and skyline rectangle packing, outline-based shape packing with hole filling, padding, 90° rotations."
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT-0"
 repository = "https://github.com/Azazel-Labs/snugly"
 documentation = "https://docs.rs/snugly"
 rust-version = "1.99"
 readme = "README.md"
+exclude = ["assets/"]
 keywords = ["packing", "atlas", "texture", "uv", "maxrects"]
 categories = ["graphics", "game-development", "algorithms"]
 
