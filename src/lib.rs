@@ -808,7 +808,27 @@ pub struct MaskPlacement {
 #[deprecated(since = "0.1.0", note = "use `pack` with `HoleFill::Never`")]
 #[must_use]
 pub fn pack_charts(masks: &[ChartMask], width: u32, height: u32) -> Option<(Vec<MaskPlacement>, u32)> {
-    skyline(masks, width, height, true)
+    skyline(&reserve_empty(masks), width, height, true)
+}
+
+/// `masks` with every shape that covers no pixels replaced by its solid frame. The outline
+/// packers rest a shape on its covered columns, so an empty one would never find a place.
+fn reserve_empty(masks: &[ChartMask]) -> std::borrow::Cow<'_, [ChartMask]> {
+    if masks.iter().all(|m| m.area > 0) {
+        return std::borrow::Cow::Borrowed(masks);
+    }
+    std::borrow::Cow::Owned(
+        masks
+            .iter()
+            .map(|m| {
+                if m.area > 0 {
+                    m.clone()
+                } else {
+                    ChartMask::rect(m.w, m.h)
+                }
+            })
+            .collect(),
+    )
 }
 
 fn skyline(masks: &[ChartMask], width: u32, height: u32, rotations: bool) -> Option<(Vec<MaskPlacement>, u32)> {
@@ -890,7 +910,7 @@ fn skyline(masks: &[ChartMask], width: u32, height: u32, rotations: bool) -> Opt
 #[deprecated(since = "0.1.0", note = "use `pack` with `HoleFill::Always`")]
 #[must_use]
 pub fn pack_charts_holes(masks: &[ChartMask], width: u32, height: u32) -> Option<(Vec<MaskPlacement>, u32)> {
-    holes(masks, width, height, true)
+    holes(&reserve_empty(masks), width, height, true)
 }
 
 fn holes(masks: &[ChartMask], width: u32, height: u32, rotations: bool) -> Option<(Vec<MaskPlacement>, u32)> {
@@ -1285,7 +1305,9 @@ pub struct Packing {
 }
 
 /// Packs irregular shapes into an atlas `opts.width` wide, as low as it can. Shapes are
-/// placed largest first. The skyline packer drops each one where its lower outline wastes
+/// placed largest first; one that covers no pixels (say, rasterized from zero-area triangles)
+/// reserves its whole frame, and one with no width or height goes at the origin. The skyline
+/// packer drops each one where its lower outline wastes
 /// least; the hole-filling packer (per [`PackOptions::fill_holes`]) can also nest shapes
 /// under overhangs. Both run (in parallel), so do the rectangle packers of
 /// [`pack_rects_strip`] on the shapes' bounding rectangles, and the lowest atlas wins. When
@@ -1309,6 +1331,7 @@ pub struct Packing {
     reason = "widths are checked above, so a packer always succeeds"
 )]
 pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> {
+    let shapes = &*reserve_empty(shapes);
     for (index, s) in shapes.iter().enumerate() {
         if s.w > opts.width && !(opts.rotations && s.h <= opts.width) {
             return Err(PackError::TooWide {
@@ -1316,6 +1339,29 @@ pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> 
                 width: opts.width,
             });
         }
+    }
+    // Frames with no width or height take no room: placed at the origin, packed without.
+    if shapes.iter().any(|s| s.w == 0 || s.h == 0) {
+        let sized: Vec<usize> = (0..shapes.len())
+            .filter(|&i| shapes[i].w > 0 && shapes[i].h > 0)
+            .collect();
+        let sub: Vec<ChartMask> = sized.iter().map(|&i| shapes[i].clone()).collect();
+        let packed = pack(&sub, opts)?;
+        let mut placements = vec![
+            MaskPlacement {
+                x: 0,
+                y: 0,
+                rotation: 0
+            };
+            shapes.len()
+        ];
+        for (k, &i) in sized.iter().enumerate() {
+            placements[i] = packed.placements[k];
+        }
+        return Ok(Packing {
+            placements,
+            height: packed.height,
+        });
     }
     let packing = if !shapes.is_empty() && shapes.iter().all(ChartMask::is_rect) {
         // Outline packing can't beat MaxRects on plain rectangles.
@@ -1405,6 +1451,38 @@ pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> 
 mod mask_tests {
     use super::*;
     use glam::Vec2;
+
+    /// Shapes that cover no pixels (no triangles, or only zero-area ones) reserve their
+    /// frame, and zero-size frames go at the origin, instead of panicking.
+    #[test]
+    fn empty_and_zero_size_shapes_pack() {
+        let p = Vec2::splat(1.0);
+        let l: Vec<bool> = (0..100).map(|i| i % 10 < 4 || i / 10 < 4).collect();
+        let empties = [
+            ChartMask::from_bits(5, 5, &[false; 25]),
+            ChartMask::from_triangles(&[], 5, 5, 1),
+            ChartMask::from_triangles(&[[p; 3]], 3, 3, 0),
+            ChartMask::rect(0, 0),
+            ChartMask::from_bits(4, 0, &[]),
+        ];
+        for empty in empties {
+            for fill in [HoleFill::Never, HoleFill::Always] {
+                for nest in [false, true] {
+                    let opts = PackOptions::width(10).with_fill_holes(fill).with_nest_in_holes(nest);
+                    let shapes = [ChartMask::from_bits(10, 10, &l), empty.clone()];
+                    let packing = pack(&shapes, &opts).unwrap();
+                    let (w, h) = empty.size();
+                    if w > 0 && h > 0 {
+                        // The frame is reserved: clear of the L's covered pixels.
+                        let q = packing.placements[1];
+                        let (fw, fh) = if q.rotation % 2 == 1 { (h, w) } else { (w, h) };
+                        assert!(q.x + fw <= 10 && q.x >= 4 && q.y >= 4 && fh <= packing.height - q.y);
+                    }
+                    assert!(pack(std::slice::from_ref(&empty), &opts).is_ok());
+                }
+            }
+        }
+    }
 
     /// Pixel-mask reference: conservative raster plus square dilation.
     fn raster(tris: &[[Vec2; 3]], w: u32, h: u32, pad: u32) -> Vec<bool> {
