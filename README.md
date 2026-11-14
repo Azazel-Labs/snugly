@@ -66,10 +66,16 @@ Minimum supported Rust version: **1.88** (edition 2024).
 | `rotations` | `true` | allow quarter turns |
 | `fill_holes` | `Auto` | also run the hole-filling packer (`Auto`: ≤ 32 shapes) |
 | `nest_in_holes` | `false` | let shapes go inside holes of other shapes |
+| `block` | `1` | pack on a grid of `block × block` cells, each shape owning whole cells |
 
 `nest_in_holes` is off by default. UV charts mostly have sliver holes, and handing those back
 as free space only fragments it. On a water bottle atlas, utilization went from 0.626 to 0.601
 with it on. Turn it on for shapes with real holes: frames, rings, decals with cut-outs.
+
+`block` makes an atlas safe to mipmap. With `block = 2^k`, every texel of mip level `k` and
+coarser belongs to one shape, so filtering never mixes two shapes. Pad shapes by at least
+`block` pixels to also keep a gutter at that level. The cost is the space lost rounding each
+shape up to whole cells.
 
 ## How it works
 

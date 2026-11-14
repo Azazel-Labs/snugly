@@ -713,6 +713,58 @@ impl ChartMask {
         (self.w, self.h)
     }
 
+    /// The shape on a grid of `block × block` pixel cells: a cell is covered when any of its
+    /// pixels is (frame `⌈w / block⌉ × ⌈h / block⌉`). Packing these and scaling the
+    /// placements by `block` (what [`PackOptions::block`] does) gives every shape whole cells.
+    #[must_use]
+    pub fn downsample(&self, block: u32) -> Self {
+        let b = block.max(1);
+        if b == 1 {
+            return self.clone();
+        }
+        let (w, h) = (self.w.div_ceil(b), self.h.div_ceil(b));
+        // Per coarse column (or row): the union of its fine columns' covered intervals.
+        let coarse = |outline: &[Option<(u32, u32)>], gaps: &[Vec<(u32, u32)>], n: u32| {
+            (0..n)
+                .map(|c| {
+                    let lo = (c * b) as usize;
+                    let hi = (lo + b as usize).min(outline.len());
+                    let mut v: Vec<(u32, u32)> = Vec::new();
+                    for x in lo..hi {
+                        let Some((a, z)) = outline[x] else { continue };
+                        let mut start = a;
+                        for &(g0, g1) in &gaps[x] {
+                            v.push((start, g0));
+                            start = g1;
+                        }
+                        v.push((start, z));
+                    }
+                    for e in &mut v {
+                        *e = (e.0 / b, e.1.div_ceil(b));
+                    }
+                    merge(&mut v);
+                    v
+                })
+                .collect::<Vec<_>>()
+        };
+        let cols = coarse(&self.col, &self.col_gaps, w);
+        let rows = coarse(&self.row, &self.row_gaps, h);
+        let outline = |v: &[Vec<(u32, u32)>]| -> Vec<Option<(u32, u32)>> {
+            v.iter().map(|s| Some((s.first()?.0, s.last()?.1))).collect()
+        };
+        let col = outline(&cols);
+        let area = col.iter().flatten().map(|(a, z)| (z - a) as usize).sum();
+        Self {
+            w,
+            h,
+            row: outline(&rows),
+            col,
+            area,
+            col_gaps: gaps(&cols),
+            row_gaps: gaps(&rows),
+        }
+    }
+
     /// [`rotated_profiles`](Self::rotated_profiles), with the turned ones left empty (never
     /// chosen) when rotation is not allowed.
     #[allow(clippy::type_complexity)]
@@ -1249,6 +1301,20 @@ pub struct PackOptions {
     /// free space (water bottle 0.626 → 0.601 utilization with it on).
     #[cfg_attr(feature = "serde", serde(default))]
     pub nest_in_holes: bool,
+    /// Grid cell size in pixels. Above 1, shapes are packed on a grid of `block × block`
+    /// cells and each shape owns every cell it touches (see [`ChartMask::downsample`]), so
+    /// no cell holds pixels of two shapes. With `block = 2^k`, texels of mip level `k` and
+    /// coarser each belong to one shape, so mipmaps don't bleed one shape into another.
+    /// Pad shapes by at least `block` pixels to also keep a one-texel gutter at that level.
+    /// The width is used in whole cells and the height is a multiple of `block`. 1 (default):
+    /// pixel placement.
+    #[cfg_attr(feature = "serde", serde(default = "one"))]
+    pub block: u32,
+}
+
+#[cfg(feature = "serde")]
+fn one() -> u32 {
+    1
 }
 
 impl PackOptions {
@@ -1262,6 +1328,7 @@ impl PackOptions {
             rotations: true,
             fill_holes: HoleFill::Auto,
             nest_in_holes: false,
+            block: 1,
         }
     }
 
@@ -1290,6 +1357,13 @@ impl PackOptions {
     #[must_use]
     pub fn with_nest_in_holes(mut self, nest: bool) -> Self {
         self.nest_in_holes = nest;
+        self
+    }
+
+    /// Sets [`block`](Self::block).
+    #[must_use]
+    pub fn with_block(mut self, block: u32) -> Self {
+        self.block = block;
         self
     }
 }
@@ -1331,6 +1405,9 @@ pub struct Packing {
     reason = "widths are checked above, so a packer always succeeds"
 )]
 pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> {
+    if opts.block > 1 {
+        return pack_blocks(shapes, opts);
+    }
     let shapes = &*reserve_empty(shapes);
     for (index, s) in shapes.iter().enumerate() {
         if s.w > opts.width && !(opts.rotations && s.h <= opts.width) {
@@ -1444,6 +1521,52 @@ pub fn pack(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> 
         }),
         _ => Ok(packing),
     }
+}
+
+/// [`pack`] on a grid of `opts.block`-pixel cells: packs the shapes' cell masks, then maps
+/// the placements back to pixels.
+fn pack_blocks(shapes: &[Shape], opts: &PackOptions) -> Result<Packing, PackError> {
+    let b = opts.block;
+    let coarse: Vec<ChartMask> = shapes.iter().map(|s| s.downsample(b)).collect();
+    let sub = PackOptions {
+        width: opts.width / b,
+        max_height: opts.max_height.map(|m| m / b),
+        block: 1,
+        ..opts.clone()
+    };
+    let packed = pack(&coarse, &sub).map_err(|e| match e {
+        PackError::TooWide { index, .. } => PackError::TooWide {
+            index,
+            width: opts.width,
+        },
+        PackError::TooTall { height, .. } => PackError::TooTall {
+            height: height * b,
+            max_height: opts.max_height.unwrap_or(0),
+        },
+    })?;
+    let placements = packed
+        .placements
+        .iter()
+        .zip(shapes.iter().zip(&coarse))
+        .map(|(p, (s, c))| {
+            // The cell frame is larger than the shape's own frame, and `rotate_point` with the
+            // shape's frame turns about a different centre: shift by the difference so callers
+            // keep mapping points with their own frame size.
+            let k = p.rotation;
+            let big = rotate_point(glam::Vec2::ZERO, c.w * b, c.h * b, k);
+            let own = rotate_point(glam::Vec2::ZERO, s.w, s.h, k);
+            let d = big - own;
+            MaskPlacement {
+                x: p.x * b + d.x as u32,
+                y: p.y * b + d.y as u32,
+                rotation: k,
+            }
+        })
+        .collect();
+    Ok(Packing {
+        placements,
+        height: packed.height * b,
+    })
 }
 
 #[cfg(test)]
@@ -1726,5 +1849,95 @@ mod mask_tests {
                 assert!(used.insert(c), "overlap at {c:?}");
             }
         }
+    }
+
+    #[test]
+    fn downsample_matches_cell_raster() {
+        let mut seed = 0x51ed_270bu32;
+        let mut rnd = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % n
+        };
+        for case in 0..30 {
+            let (w, h) = (5 + rnd(40), 5 + rnd(40));
+            let mut bits = vec![false; (w * h) as usize];
+            for _ in 0..4 {
+                let (x0, y0) = (rnd(w), rnd(h));
+                let (x1, y1) = (x0 + 1 + rnd(w - x0), y0 + 1 + rnd(h - y0));
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        bits[(y * w + x) as usize] = (x + 2 * y) % 7 != 0 || case % 2 == 0;
+                    }
+                }
+            }
+            for b in [2u32, 3, 4, 8] {
+                let (cw, ch) = (w.div_ceil(b), h.div_ceil(b));
+                let cell: Vec<bool> = (0..cw * ch)
+                    .map(|i| {
+                        let (cx, cy) = (i % cw, i / cw);
+                        (cy * b..((cy + 1) * b).min(h))
+                            .any(|y| (cx * b..((cx + 1) * b).min(w)).any(|x| bits[(y * w + x) as usize]))
+                    })
+                    .collect();
+                let want = ChartMask::from_bits(cw, ch, &cell);
+                let got = ChartMask::from_bits(w, h, &bits).downsample(b);
+                assert_eq!((got.w, got.h), (want.w, want.h));
+                assert_eq!(got.col, want.col, "case {case} block {b} columns");
+                assert_eq!(got.row, want.row, "case {case} block {b} rows");
+                assert_eq!(got.col_gaps, want.col_gaps, "case {case} block {b} column gaps");
+                assert_eq!(got.row_gaps, want.row_gaps, "case {case} block {b} row gaps");
+                assert_eq!(got.area, want.area);
+            }
+        }
+    }
+
+    /// With `block`, no grid cell holds pixels of two shapes, and points mapped with each
+    /// shape's own frame (as callers do) still land on its pixels.
+    #[test]
+    fn block_packing_gives_every_shape_whole_cells() {
+        let mut seed = 0x2545_f491u32;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 10_000) as f32 / 10_000.0
+        };
+        let shapes: Vec<ChartMask> = (0..20)
+            .map(|i| {
+                let (w, h) = (9 + i % 13, 7 + (i * 5) % 17);
+                let tris: Vec<[Vec2; 3]> = (0..3)
+                    .map(|_| [0; 3].map(|_| Vec2::new(1.0 + rnd() * (w - 2) as f32, 1.0 + rnd() * (h - 2) as f32)))
+                    .collect();
+                ChartMask::from_triangles(&tris, w, h, 1)
+            })
+            .collect();
+        for b in [2u32, 4, 8] {
+            for fill in [HoleFill::Never, HoleFill::Always] {
+                let opts = PackOptions::width(100).with_block(b).with_fill_holes(fill);
+                let p = pack(&shapes, &opts).unwrap();
+                assert_eq!(p.height % b, 0);
+                let mut owner = std::collections::HashMap::new();
+                for (i, (m, pl)) in shapes.iter().zip(&p.placements).enumerate() {
+                    for (x, y) in cells(m, pl) {
+                        assert!(x < 100 && y < p.height, "outside at {x},{y}");
+                        let o = *owner.entry((x / b, y / b)).or_insert(i);
+                        assert_eq!(o, i, "block {b}: cell ({}, {}) shared", x / b, y / b);
+                    }
+                    // A covered pixel's centre maps (with the shape's own frame) onto a pixel
+                    // the placement covers.
+                    let (fx, fy) = (0..m.w).find_map(|x| m.col[x as usize].map(|(lo, _)| (x, lo))).unwrap();
+                    let q = rotate_point(Vec2::new(fx as f32 + 0.5, fy as f32 + 0.5), m.w, m.h, pl.rotation);
+                    let at = (pl.x + q.x.floor() as u32, pl.y + q.y.floor() as u32);
+                    assert!(cells(m, pl).contains(&at), "block {b}: point maps to {at:?}");
+                }
+            }
+        }
+        let capped = PackOptions::width(100).with_block(4).with_max_height(8);
+        assert!(matches!(
+            pack(&shapes, &capped),
+            Err(PackError::TooTall { max_height: 8, .. })
+        ));
     }
 }
