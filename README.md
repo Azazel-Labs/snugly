@@ -147,4 +147,4 @@ API and a patch bump never does.
 
 ## License
 
-[MIT-0](LICENSE-MIT0) (MIT No Attribution): use it for anything, no attribution required.
+[MIT-0](LICENSE) (MIT No Attribution): use it for anything, no attribution required.
